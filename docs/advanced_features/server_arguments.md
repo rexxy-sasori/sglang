@@ -130,6 +130,8 @@ Please consult the documentation below and [server_args.py](https://github.com/s
 | `--chunked-prefill-size` | The maximum number of tokens in a chunk for the chunked prefill. Setting this to -1 means disabling chunked prefill. | `None` | Type: int |
 | `--prefill-max-requests` | The maximum number of requests in a prefill batch. If not specified, there is no limit. | `None` | Type: int |
 | `--enable-dynamic-chunking` | Enable dynamic chunk size adjustment for pipeline parallelism. When enabled, chunk sizes are dynamically calculated based on fitted function to maintain consistent execution time across chunks. | `False` | bool flag (set to enable) |
+| `--enable-semantic-pruning` | Enable semantic-aware KV cache pruning for agent workflows. When enabled, old conversation history is pruned after summary requests. | `False` | bool flag (set to enable) |
+| `--enable-memory-aware-chunking` | Enable memory-aware dynamic chunk sizing for prefill operations. When enabled, chunk sizes are dynamically adjusted based on available memory after pruning operations. | `False` | bool flag (set to enable) |
 | `--max-prefill-tokens` | The maximum number of tokens in a prefill batch. The real bound will be the maximum of this value and the model's maximum context length. | `16384` | Type: int |
 | `--schedule-policy` | The scheduling policy of the requests. | `fcfs` | `lpm`, `random`, `fcfs`, `dfs-weight`, `lof`, `priority`, `routing-key` |
 | `--enable-priority-scheduling` | Enable priority scheduling. Requests with higher priority integer values will be scheduled first by default. | `False` | bool flag (set to enable) |

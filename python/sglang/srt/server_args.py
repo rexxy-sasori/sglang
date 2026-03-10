@@ -324,6 +324,8 @@ class ServerArgs:
     max_total_tokens: Optional[int] = None
     chunked_prefill_size: Optional[int] = None
     enable_dynamic_chunking: bool = False
+    enable_semantic_pruning: bool = False
+    enable_memory_aware_chunking: bool = False
     max_prefill_tokens: int = 16384
     prefill_max_requests: Optional[int] = None
     schedule_policy: str = "fcfs"
@@ -2984,6 +2986,18 @@ class ServerArgs:
             action="store_true",
             default=ServerArgs.enable_dynamic_chunking,
             help="Enable dynamic chunk size adjustment for pipeline parallelism. When enabled, chunk sizes are dynamically calculated based on fitted function to maintain consistent execution time across chunks.",
+        )
+        parser.add_argument(
+            "--enable-semantic-pruning",
+            action="store_true",
+            default=ServerArgs.enable_semantic_pruning,
+            help="Enable semantic-aware KV cache pruning for agent workflows. When enabled, old conversation history is pruned after summary requests.",
+        )
+        parser.add_argument(
+            "--enable-memory-aware-chunking",
+            action="store_true",
+            default=ServerArgs.enable_memory_aware_chunking,
+            help="Enable memory-aware dynamic chunk sizing for prefill operations. When enabled, chunk sizes are dynamically adjusted based on available memory after pruning operations.",
         )
         parser.add_argument(
             "--max-prefill-tokens",

@@ -280,6 +280,7 @@ class RadixCache(BasePrefixCache):
         self.is_eagle = params.is_eagle
         self.disable_finished_insert = params.disable_finished_insert
         self.eviction_policy = params.eviction_policy.lower()
+        self.enable_semantic_pruning = params.enable_semantic_pruning
 
         self.kv_event_queue = []
 
@@ -999,6 +1000,25 @@ class RadixCache(BasePrefixCache):
             return False
         return node == self.root_node or node.parent is not None
 
+    def _can_prune_subtree(self, node: TreeNode) -> bool:
+        """Check if a node and all its descendants can be pruned (lock_ref=0).
+        
+        Args:
+            node: The root of the subtree to check
+            
+        Returns:
+            True if all nodes in the subtree have lock_ref=0, False otherwise
+        """
+        if node.lock_ref > 0:
+            return False
+        
+        # Check all children recursively
+        for child in node.children.values():
+            if not self._can_prune_subtree(child):
+                return False
+        
+        return True
+
     def prune_from_node(self, start_node: TreeNode):
         """Prune nodes starting from start_node up to nodes with lock_ref > 0.
         
@@ -1010,8 +1030,8 @@ class RadixCache(BasePrefixCache):
         Args:
             start_node: The node to start pruning from
         """
-        if self.disable or start_node is None:
-            logger.warning(f"Pruning skipped: disable={self.disable}, start_node={start_node}")
+        if self.disable or start_node is None or not self.enable_semantic_pruning:
+            logger.warning(f"Pruning skipped: disable={self.disable}, start_node={start_node}, enable_semantic_pruning={self.enable_semantic_pruning}")
             return
 
         # Pitfall 1: Check if node still exists (avoid double-free from concurrent pruning)
@@ -1032,6 +1052,7 @@ class RadixCache(BasePrefixCache):
         logger.debug(f"Starting pruning from node: {start_node}")
         node = start_node
         pruned_count = 0
+        previous_child = None  # Track the child we came from
 
         while node is not None and node != self.root_node:
             # Re-check existence (node might have been deleted by another concurrent prune)
@@ -1042,27 +1063,86 @@ class RadixCache(BasePrefixCache):
             # Pitfall 2: Stop if node is locked (other active requests depend on it)
             if node.lock_ref > 0:
                 logger.debug(f"Stopping pruning at node with lock_ref={node.lock_ref}")
+                
+                # Check for dead sibling branches (other children with lock_ref=0 subtrees)
+                if previous_child is not None:
+                    logger.debug(f"Checking for dead sibling branches of {previous_child} under {node}")
+                    # Iterate through all children except the one we came from
+                    for child_key, child_node in list(node.children.items()):
+                        if child_node != previous_child and self._can_prune_subtree(child_node):
+                            logger.debug(f"Found dead sibling branch: {child_node}")
+                            
+                            # Prune this dead sibling subtree
+                            nodes_to_prune = []
+                            queue = [child_node]
+                            
+                            while queue:
+                                current = queue.pop(0)
+                                nodes_to_prune.append(current)
+                                queue.extend(current.children.values())
+                            
+                            # Free memory and delete nodes
+                            for n in reversed(nodes_to_prune):  # Delete children first
+                                if n.value is not None:
+                                    self.token_to_kv_pool_allocator.free(n.value)
+                                    self._record_remove_event(n)
+                                    pruned_count += 1
+                                self._delete_leaf(n)
+                
                 break
 
-            # Pitfall 2: Stop if node has children (protects active branches)
-            if len(node.children) > 0:
-                logger.debug(f"Stopping pruning at node with {len(node.children)} children")
-                break
-
-            # Safe to delete this leaf node
-            parent = node.parent  # Save parent before deletion
-            
-            # Free the KV cache memory
-            if node.value is not None:
-                self.token_to_kv_pool_allocator.free(node.value)
-                self._record_remove_event(node)
-                pruned_count += 1
-            
-            # Delete the leaf node
-            self._delete_leaf(node)
-            
-            # Move to parent
-            node = parent
+            # Check if entire subtree can be pruned
+            if self._can_prune_subtree(node):
+                # Prune the entire subtree
+                logger.debug(f"Pruning entire subtree starting at node: {node}")
+                
+                # Use BFS to collect all nodes in the subtree
+                nodes_to_prune = []
+                queue = [node]
+                
+                while queue:
+                    current = queue.pop(0)
+                    nodes_to_prune.append(current)
+                    queue.extend(current.children.values())
+                
+                # Free memory and delete nodes
+                for n in reversed(nodes_to_prune):  # Delete children first
+                    if n.value is not None:
+                        self.token_to_kv_pool_allocator.free(n.value)
+                        self._record_remove_event(n)
+                        pruned_count += 1
+                    
+                    # Only delete if it's not the start node (we'll handle it below)
+                    if n != node:
+                        self._delete_leaf(n)
+                
+                # Delete the root of the subtree
+                parent = node.parent
+                previous_child = node  # Track this child for sibling check
+                self._delete_leaf(node)
+                node = parent
+            else:
+                # If subtree can't be pruned, check if this is a leaf node
+                if len(node.children) == 0:
+                    # Safe to delete this leaf node
+                    parent = node.parent  # Save parent before deletion
+                    previous_child = node  # Track this child for sibling check
+                    
+                    # Free the KV cache memory
+                    if node.value is not None:
+                        self.token_to_kv_pool_allocator.free(node.value)
+                        self._record_remove_event(node)
+                        pruned_count += 1
+                    
+                    # Delete the leaf node
+                    self._delete_leaf(node)
+                    
+                    # Move to parent
+                    node = parent
+                else:
+                    # Node has children that can't be pruned, stop here
+                    logger.debug(f"Stopping pruning at node with children that can't be pruned")
+                    break
 
         logger.debug(f"Pruning complete. Pruned {pruned_count} nodes.")
 

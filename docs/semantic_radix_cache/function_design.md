@@ -61,15 +61,21 @@ After summary: Only [System] remains
 
 | File | Changes |
 |------|---------|
-| `sglang/srt/mem_cache/radix_cache.py` | Added `prune_from_node()` method; Added `_node_exists()` method for safety checks; Added double-free protection, root protection, and child constraint checks |
+| `sglang/srt/mem_cache/radix_cache.py` | Added `prune_from_node()` method; Added `_node_exists()` method for safety checks; Added `_can_prune_subtree()` method for subtree pruning; Added enhanced pruning logic with subtree pruning and sibling branch pruning; Added double-free protection, root protection, and child constraint checks; Added `enable_semantic_pruning` parameter to control semantic-aware pruning |
 
-### 7. Scheduling Policy
+### 7. Scheduler
+
+| File | Changes |
+|------|---------|
+| `sglang/srt/managers/scheduler.py` | Added memory-aware dynamic chunk sizing that adjusts chunk sizes based on available memory after pruning operations; Added `enable_memory_aware_chunking` parameter to control this feature |
+
+### 8. Scheduling Policy
 
 | File | Changes |
 |------|---------|
 | `sglang/srt/managers/schedule_policy.py` | Added `_prioritize_reset_requests()` method to prioritize reset requests in waiting queue; Modified `calc_priority()` to call prioritization at the beginning |
 
-### 8. Test Scripts
+### 9. Test Scripts
 
 | File | Changes |
 |------|---------|
@@ -277,6 +283,51 @@ def prune_from_node(self, start_node: TreeNode):
 
 ---
 
+### Problem 9: Incomplete Pruning of Dead Branches
+
+**Symptom**: Pruning would stop at non-leaf nodes, leaving dead branches in the cache
+
+**Root Cause**: The pruning algorithm only checked individual leaf nodes, not entire subtrees
+
+**Solution**: Enhanced pruning logic with subtree pruning and sibling branch pruning:
+
+1. **Added `_can_prune_subtree()` method** to recursively check if an entire subtree can be pruned (all nodes have `lock_ref=0`)
+
+2. **Enhanced `prune_from_node()`** to:
+   - Check if entire subtrees can be pruned
+   - Use BFS to collect and prune entire subtrees
+   - Prune dead sibling branches when encountering a locked node
+
+3. **Implementation**:
+```python
+def _can_prune_subtree(self, node: TreeNode) -> bool:
+    if node.lock_ref > 0:
+        return False
+    for child in node.children.values():
+        if not self._can_prune_subtree(child):
+            return False
+    return True
+
+def prune_from_node(self, start_node: TreeNode):
+    # ... existing safety checks ...
+    
+    while node is not None and node != self.root_node:
+        # ... existing checks ...
+        
+        # Check if entire subtree can be pruned
+        if self._can_prune_subtree(node):
+            # Prune entire subtree using BFS
+            # ...
+        
+        # Check for dead sibling branches when encountering a locked node
+        if node.lock_ref > 0:
+            # Prune dead sibling branches
+            # ...
+            break
+```
+
+---
+
 ## Final Results
 
 ### Before Fixes
@@ -296,6 +347,8 @@ def prune_from_node(self, start_node: TreeNode):
 - **Deferred batch pruning eliminates race conditions** ✓
 - **Safety checks prevent double-free and root deletion** ✓
 - **Reset requests prioritized in scheduling** ✓
+- **Enhanced pruning removes entire dead subtrees** ✓
+- **Dead sibling branches pruned when encountering locked nodes** ✓
 
 ---
 
@@ -333,4 +386,8 @@ def prune_from_node(self, start_node: TreeNode):
 7. **Prioritization improves throughput**: Reset requests should be prioritized to free memory faster, enabling better utilization for subsequent requests
 
 8. **Memory-aware scheduling opportunities**: Traditional FCFS can be enhanced with memory awareness to better utilize freed space from pruning operations
+
+9. **Subtree-level pruning improves efficiency**: Checking entire subtrees for prunability allows for more aggressive cleaning of dead branches
+
+10. **Sibling branch pruning reduces memory waste**: Pruning dead sibling branches when encountering locked nodes ensures comprehensive cleanup of unused cache entries
 

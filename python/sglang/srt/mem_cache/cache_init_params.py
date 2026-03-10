@@ -33,3 +33,5 @@ class CacheInitParams:
     chunked_prefill_size: Optional[int] = None
 
     sliding_window_size: Optional[int] = None
+
+    enable_semantic_pruning: bool = False
