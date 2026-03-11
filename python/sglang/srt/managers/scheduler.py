@@ -2010,12 +2010,15 @@ class Scheduler(
         # After pruning, available_size increases significantly - use this to determine optimal chunk size
         if self.server_args.enable_memory_aware_chunking:
             base_chunk_size = self.chunked_prefill_size
-            min_available_for_large_chunk = 3 * base_chunk_size  # Need at least 3x base for larger chunks
-
+            
+            # More aggressive thresholds for better utilization of pruned space
+            # Lower threshold: only need 2x base (was 3x) to trigger larger chunks
+            min_available_for_large_chunk = 2 * base_chunk_size
+            
             if available_size_before_scheduling > min_available_for_large_chunk:
-                # Cap the maximum chunk size to avoid performance degradation
-                # Use 2x base_chunk_size as the maximum increase (e.g., 4096 -> 8192 or 12288)
-                max_multiplier = min(3, available_size_before_scheduling // base_chunk_size // 2)
+                # More conservative multiplier to avoid latency spikes
+                # Cap at 2x instead of 3x for better latency/throughput balance
+                max_multiplier = min(2, available_size_before_scheduling // base_chunk_size // 2)
                 adjusted_chunk = base_chunk_size * max_multiplier
                 
                 # Only use larger chunk if we have enough memory and it's significantly larger
