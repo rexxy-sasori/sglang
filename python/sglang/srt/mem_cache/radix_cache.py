@@ -988,7 +988,7 @@ class RadixCache(BasePrefixCache):
         
         A node exists if:
         - It is the root node, OR
-        - It has a parent (deleted nodes have parent=None after _delete_leaf)
+        - It has a parent and is still present in the parent's children dict
         
         Args:
             node: The node to check
@@ -998,7 +998,14 @@ class RadixCache(BasePrefixCache):
         """
         if node is None:
             return False
-        return node == self.root_node or node.parent is not None
+        if node == self.root_node:
+            return True
+        if node.parent is None:
+            return False
+        
+        # Check if node is still in parent's children dict
+        child_key = self.get_child_key_fn(node.key)
+        return child_key in node.parent.children and node.parent.children[child_key] == node
 
     def _can_prune_subtree(self, node: TreeNode) -> bool:
         """Check if a node and all its descendants can be pruned (lock_ref=0).
@@ -1083,6 +1090,10 @@ class RadixCache(BasePrefixCache):
                             
                             # Free memory and delete nodes
                             for n in reversed(nodes_to_prune):  # Delete children first
+                                # Check if node still exists before deleting
+                                if not self._node_exists(n):
+                                    logger.debug(f"Node already deleted during sibling pruning: {n}")
+                                    continue
                                 if n.value is not None:
                                     self.token_to_kv_pool_allocator.free(n.value)
                                     self._record_remove_event(n)
@@ -1107,6 +1118,10 @@ class RadixCache(BasePrefixCache):
                 
                 # Free memory and delete nodes
                 for n in reversed(nodes_to_prune):  # Delete children first
+                    # Check if node still exists before deleting
+                    if not self._node_exists(n):
+                        logger.debug(f"Node already deleted during subtree pruning: {n}")
+                        continue
                     if n.value is not None:
                         self.token_to_kv_pool_allocator.free(n.value)
                         self._record_remove_event(n)
@@ -1119,11 +1134,19 @@ class RadixCache(BasePrefixCache):
                 # Delete the root of the subtree
                 parent = node.parent
                 previous_child = node  # Track this child for sibling check
-                self._delete_leaf(node)
+                # Check if node still exists before deleting
+                if self._node_exists(node):
+                    self._delete_leaf(node)
                 node = parent
             else:
                 # If subtree can't be pruned, check if this is a leaf node
                 if len(node.children) == 0:
+                    # Check if node still exists before deleting
+                    if not self._node_exists(node):
+                        logger.debug(f"Node already deleted during leaf pruning: {node}")
+                        node = node.parent
+                        continue
+                    
                     # Safe to delete this leaf node
                     parent = node.parent  # Save parent before deletion
                     previous_child = node  # Track this child for sibling check
