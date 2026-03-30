@@ -109,6 +109,8 @@ from sglang.srt.managers.io_struct import (
     OpenSessionReqInput,
     OpenSessionReqOutput,
     PauseGenerationReqInput,
+    PruneSessionReqInput,
+    PruneSessionReqOutput,
     ProfileReq,
     ReleaseMemoryOccupationReqInput,
     ResumeMemoryOccupationReqInput,
@@ -172,7 +174,7 @@ from sglang.srt.managers.session_controller import Session, SessionReqNode
 from sglang.srt.managers.utils import GenerationBatchResult, validate_input_length
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.common import release_kv_cache
-from sglang.srt.mem_cache.radix_cache import RadixCache
+from sglang.srt.mem_cache.radix_cache import RadixCache, TreeNode
 from sglang.srt.model_executor.forward_batch_info import ForwardMode, PPProxyTensors
 from sglang.srt.multiplex.multiplexing_mixin import SchedulerMultiplexMixin
 from sglang.srt.parser.reasoning_parser import ReasoningParser
@@ -729,6 +731,9 @@ class Scheduler(
         self.sessions: Dict[str, Session] = {}
         self.forward_sleep_time = None
         self._engine_paused = False
+        # Pending prunes from /v1/sessions/prune endpoint
+        # These are processed during the 3-phase deferred pruning in output processor
+        self.pending_prunes: List[TreeNode] = []
 
     def init_chunked_prefill(self):
         # Init chunked prefill
@@ -1020,6 +1025,7 @@ class Scheduler(
                 (AbortReq, self.abort_request),
                 (OpenSessionReqInput, self.open_session),
                 (CloseSessionReqInput, self.close_session),
+                (PruneSessionReqInput, self.prune_session_wrapped),
                 (UpdateWeightFromDiskReqInput, self.update_weights_from_disk),
                 (InitWeightsUpdateGroupReqInput, self.init_weights_update_group),
                 (DestroyWeightsUpdateGroupReqInput, self.destroy_weights_update_group),
@@ -2490,6 +2496,61 @@ class Scheduler(
     def flush_cache_wrapped(self, recv_req: FlushCacheReqInput):
         success = self.flush_cache()
         return FlushCacheReqOutput(success=success)
+
+    def prune_session_wrapped(self, recv_req: PruneSessionReqInput) -> PruneSessionReqOutput:
+        """Prune a session's KV cache without generation.
+        
+        This is used for out-of-band summary scenarios where the summary is generated
+        by a different model, and we need to prune the cache without generating tokens.
+        
+        This method uses the 3-phase deferred pruning mechanism for thread safety:
+        1. Prefix matching is done immediately to find the target node
+        2. The node is added to pending_prunes queue
+        3. The actual pruning happens during the next batch's output processing
+        """
+        try:
+            # Tokenize the prompt
+            input_ids = self.tokenizer.encode(recv_req.prompt, add_special_tokens=False)
+            
+            # Create a RadixKey for prefix matching
+            from sglang.srt.mem_cache.radix_cache import RadixKey
+            from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
+            
+            radix_key = RadixKey(input_ids, extra_key=None)
+            
+            # Perform prefix matching to find the last node
+            match_result = self.tree_cache.match_prefix(MatchPrefixParams(key=radix_key))
+            last_node = match_result.last_device_node
+            
+            if last_node is None or last_node == self.tree_cache.root_node:
+                return PruneSessionReqOutput(
+                    success=False,
+                    message="No matching prefix found in cache"
+                )
+            
+            # Add to pending prunes queue instead of pruning immediately
+            # This ensures the pruning happens during the 3-phase deferred pruning
+            # mechanism in process_batch_result_prefill/decode, which is thread-safe
+            self.pending_prunes.append(last_node)
+            
+            logger.info(
+                f"Session {recv_req.session_id} prune queued: "
+                f"node with prefix length {len(input_ids)} tokens will be pruned "
+                f"during next batch processing"
+            )
+            
+            return PruneSessionReqOutput(
+                success=True,
+                matched_prefix_length=len(input_ids),
+                message=f"Prune queued for session {recv_req.session_id}, will execute during next batch processing"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to queue prune for session {recv_req.session_id}: {e}")
+            return PruneSessionReqOutput(
+                success=False,
+                message=f"Error: {str(e)}"
+            )
 
     def clear_hicache_storage_wrapped(self, recv_req: ClearHiCacheReqInput):
         if self.enable_hierarchical_cache:

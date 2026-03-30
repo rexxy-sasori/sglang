@@ -332,6 +332,29 @@ class SchedulerRuntimeCheckerMixin:
         self.check_memory()
         self.check_tree_cache()
         self.new_token_ratio = self.init_new_token_ratio
+        
+        # Process pending prunes during idle time (no request needed)
+        if hasattr(self, 'pending_prunes') and self.pending_prunes:
+            tree_size_before = self.tree_cache.total_size()
+            available_size_before = self.token_to_kv_pool_allocator.available_size()
+            pruned_count = 0
+            
+            for node in self.pending_prunes:
+                self.tree_cache.prune_from_node(node)
+                pruned_count += 1
+            
+            self.pending_prunes.clear()
+            
+            tree_size_after = self.tree_cache.total_size()
+            available_size_after = self.token_to_kv_pool_allocator.available_size()
+            freed_tokens = tree_size_before - tree_size_after
+            
+            logger.info(
+                f"[PRUNE-IDLE] Processed {pruned_count} pending prunes during idle: "
+                f"tree_size={tree_size_before}->{tree_size_after}, "
+                f"freed_tokens={freed_tokens}"
+            )
+        
         self.maybe_sleep_on_idle()
 
 

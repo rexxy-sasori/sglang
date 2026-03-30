@@ -1332,3 +1332,45 @@ class ResponseReasoningTextContent(BaseModel):
 ResponseInputOutputItem: TypeAlias = Union[
     ResponseInputItemParam, "ResponseReasoningItem", ResponseFunctionToolCall
 ]
+
+
+class PruneSessionRequest(BaseModel):
+    """Request model for pruning a session's KV cache without generation.
+    
+    This is used for out-of-band summary scenarios where the summary is generated
+    by a different model, and we need to prune the main model's cache without
+    generating any tokens.
+    """
+    session_id: str = Field(
+        description="The session ID to prune"
+    )
+    prompt: str = Field(
+        description="The context prompt for prefix matching in the radix tree"
+    )
+    prune_mode: Literal["subtree", "leaf", "aggressive"] = Field(
+        default="subtree",
+        description="Pruning mode: subtree (prune entire subtrees), leaf (prune only leaves), aggressive (prune as much as possible)"
+    )
+
+
+class PruneSessionResponse(BaseModel):
+    """Response model for session pruning operation."""
+    success: bool = Field(
+        description="Whether the pruning operation was successful"
+    )
+    pruned_nodes: int = Field(
+        default=0,
+        description="Number of nodes pruned from the radix tree"
+    )
+    freed_tokens: int = Field(
+        default=0,
+        description="Number of tokens freed from KV cache"
+    )
+    matched_prefix_length: int = Field(
+        default=0,
+        description="Length of the matched prefix in tokens"
+    )
+    message: Optional[str] = Field(
+        default=None,
+        description="Additional information or error message"
+    )

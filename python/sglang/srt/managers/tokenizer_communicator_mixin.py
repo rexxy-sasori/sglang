@@ -59,6 +59,8 @@ from sglang.srt.managers.io_struct import (
     LoadLoRAAdapterReqOutput,
     LoRAUpdateOutput,
     OpenSessionReqInput,
+    PruneSessionReqInput,
+    PruneSessionReqOutput,
     ProfileReq,
     ProfileReqOutput,
     ProfileReqType,
@@ -238,6 +240,9 @@ class TokenizerCommunicatorMixin:
         self.get_kv_cache_state_communicator = _Communicator(
             self.send_to_scheduler, server_args.dp_size
         )
+        self.prune_session_communicator = _Communicator(
+            self.send_to_scheduler, server_args.dp_size
+        )
 
         self._result_dispatcher += self._get_communicator_dispatcher()
 
@@ -340,8 +345,32 @@ class TokenizerCommunicatorMixin:
                     GetKVCacheStateReqOutput,
                     self.get_kv_cache_state_communicator.handle_recv,
                 ),
+                (
+                    PruneSessionReqOutput,
+                    self.prune_session_communicator.handle_recv,
+                ),
             ]
         )
+
+    async def prune_session(
+        self: TokenizerManager,
+        session_id: str,
+        prompt: str,
+        prune_mode: str = "subtree",
+    ) -> PruneSessionReqOutput:
+        """Prune a session's KV cache without generation.
+        
+        Used for out-of-band summary scenarios where the summary is generated
+        by a different model, and we need to prune the cache without generating tokens.
+        """
+        result = await self.prune_session_communicator(
+            PruneSessionReqInput(
+                session_id=session_id,
+                prompt=prompt,
+                prune_mode=prune_mode,
+            )
+        )
+        return result[0]
 
     async def flush_cache(self: TokenizerManager) -> FlushCacheReqOutput:
         return (await self.flush_cache_communicator(FlushCacheReqInput()))[0]

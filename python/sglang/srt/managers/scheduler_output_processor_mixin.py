@@ -279,6 +279,27 @@ class SchedulerOutputProcessorMixin:
                 available_size_after = self.token_to_kv_pool_allocator.available_size()
                 freed_tokens = tree_size_before - tree_size_after
                 logger.debug(f"[PRUNE-PREFILL] After pruning: tree_size={tree_size_after}, available_size={available_size_after}, freed_tokens={freed_tokens}, available_change={available_size_after - available_size_before}")
+            
+            # Phase 3b: Prune pending nodes from /v1/sessions/prune endpoint
+            # These are out-of-band pruning requests that bypass the normal request flow
+            if hasattr(self, 'pending_prunes') and self.pending_prunes:
+                tree_size_before = self.tree_cache.total_size()
+                available_size_before = self.token_to_kv_pool_allocator.available_size()
+                logger.debug(f"[PRUNE-PENDING] Processing {len(self.pending_prunes)} pending prunes: tree_size={tree_size_before}, available_size={available_size_before}")
+                
+                pruned_count = 0
+                for node in self.pending_prunes:
+                    logger.debug(f"Pruning pending node: {node}")
+                    self.tree_cache.prune_from_node(node)
+                    pruned_count += 1
+                
+                # Clear the pending prunes list
+                self.pending_prunes.clear()
+                
+                tree_size_after = self.tree_cache.total_size()
+                available_size_after = self.token_to_kv_pool_allocator.available_size()
+                freed_tokens = tree_size_before - tree_size_after
+                logger.info(f"[PRUNE-PENDING] Completed {pruned_count} pending prunes: tree_size={tree_size_after}, available_size={available_size_after}, freed_tokens={freed_tokens}, available_change={available_size_after - available_size_before}")
 
         else:  # embedding or reward model
             if result.copy_done is not None:
@@ -545,6 +566,27 @@ class SchedulerOutputProcessorMixin:
             available_size_after = self.token_to_kv_pool_allocator.available_size()
             freed_tokens = tree_size_before - tree_size_after
             logger.debug(f"[PRUNE-DECODE] After pruning: tree_size={tree_size_after}, available_size={available_size_after}, freed_tokens={freed_tokens}, available_change={available_size_after - available_size_before}")
+        
+        # Phase 3b: Prune pending nodes from /v1/sessions/prune endpoint
+        # These are out-of-band pruning requests that bypass the normal request flow
+        if hasattr(self, 'pending_prunes') and self.pending_prunes:
+            tree_size_before = self.tree_cache.total_size()
+            available_size_before = self.token_to_kv_pool_allocator.available_size()
+            logger.debug(f"[PRUNE-PENDING-DECODE] Processing {len(self.pending_prunes)} pending prunes: tree_size={tree_size_before}, available_size={available_size_before}")
+            
+            pruned_count = 0
+            for node in self.pending_prunes:
+                logger.debug(f"Pruning pending node: {node}")
+                self.tree_cache.prune_from_node(node)
+                pruned_count += 1
+            
+            # Clear the pending prunes list
+            self.pending_prunes.clear()
+            
+            tree_size_after = self.tree_cache.total_size()
+            available_size_after = self.token_to_kv_pool_allocator.available_size()
+            freed_tokens = tree_size_before - tree_size_after
+            logger.info(f"[PRUNE-PENDING-DECODE] Completed {pruned_count} pending prunes: tree_size={tree_size_after}, available_size={available_size_after}, freed_tokens={freed_tokens}, available_change={available_size_after - available_size_before}")
 
         self.stream_output(batch.reqs, batch.return_logprob)
         self.token_to_kv_pool_allocator.free_group_end()

@@ -1173,6 +1173,28 @@ class FlushCacheReqOutput(BaseReq):
 
 
 @dataclass
+class PruneSessionReqInput(BaseReq):
+    """Request to prune a session's KV cache without generation.
+    
+    Used for out-of-band summary scenarios where the summary is generated
+    by a different model, and we need to prune the cache without generating tokens.
+    """
+    session_id: str
+    prompt: str
+    prune_mode: str = "subtree"  # "subtree", "leaf", or "aggressive"
+
+
+@dataclass
+class PruneSessionReqOutput(BaseReq):
+    """Response from session pruning operation."""
+    success: bool
+    pruned_nodes: int = 0
+    freed_tokens: int = 0
+    matched_prefix_length: int = 0
+    message: Optional[str] = None
+
+
+@dataclass
 class AttachHiCacheStorageReqInput(BaseReq):
     """Dynamically attach (enable) HiCache storage backend at runtime.
 
