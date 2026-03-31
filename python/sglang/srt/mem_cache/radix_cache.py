@@ -1051,11 +1051,6 @@ class RadixCache(BasePrefixCache):
             logger.warning(f"Attempted to prune root node, skipping")
             return
 
-        # Protect immediate children of root (system prompt protection)
-        if start_node.parent == self.root_node:
-            logger.debug(f"Protecting node near root: {start_node}")
-            return
-
         logger.debug(f"Starting pruning from node: {start_node}")
         node = start_node
         pruned_count = 0
@@ -1072,7 +1067,36 @@ class RadixCache(BasePrefixCache):
                 logger.debug(f"Stopping pruning at node with lock_ref={node.lock_ref}")
                 
                 # Check for dead sibling branches (other children with lock_ref=0 subtrees)
-                if previous_child is not None:
+                # If previous_child is None, it means we started at a locked node,
+                # so check all siblings of the start node
+                if previous_child is None and node == start_node:
+                    logger.debug(f"Start node is locked, checking all siblings of {start_node}")
+                    # Iterate through all children of the parent (all siblings of start_node)
+                    for child_key, child_node in list(node.parent.children.items()):
+                        if child_node != start_node and self._can_prune_subtree(child_node):
+                            logger.debug(f"Found dead sibling branch of locked start node: {child_node}")
+                            
+                            # Prune this dead sibling subtree
+                            nodes_to_prune = []
+                            queue = [child_node]
+                            
+                            while queue:
+                                current = queue.pop(0)
+                                nodes_to_prune.append(current)
+                                queue.extend(current.children.values())
+                            
+                            # Free memory and delete nodes
+                            for n in reversed(nodes_to_prune):  # Delete children first
+                                # Check if node still exists before deleting
+                                if not self._node_exists(n):
+                                    logger.debug(f"Node already deleted during sibling pruning: {n}")
+                                    continue
+                                if n.value is not None:
+                                    self.token_to_kv_pool_allocator.free(n.value)
+                                    self._record_remove_event(n)
+                                    pruned_count += 1
+                                self._delete_leaf(n)
+                elif previous_child is not None:
                     logger.debug(f"Checking for dead sibling branches of {previous_child} under {node}")
                     # Iterate through all children except the one we came from
                     for child_key, child_node in list(node.children.items()):

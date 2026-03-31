@@ -2521,28 +2521,32 @@ class Scheduler(
             # Perform prefix matching to find the last node
             match_result = self.tree_cache.match_prefix(MatchPrefixParams(key=radix_key))
             last_node = match_result.last_device_node
-            
+
             if last_node is None or last_node == self.tree_cache.root_node:
                 return PruneSessionReqOutput(
                     success=False,
                     message="No matching prefix found in cache"
                 )
-            
+
+            # Calculate actual matched prefix length from device_indices
+            actual_matched_length = len(match_result.device_indices)
+
             # Add to pending prunes queue instead of pruning immediately
             # This ensures the pruning happens during the 3-phase deferred pruning
             # mechanism in process_batch_result_prefill/decode, which is thread-safe
             self.pending_prunes.append(last_node)
-            
+
             logger.info(
                 f"Session {recv_req.session_id} prune queued: "
-                f"node with prefix length {len(input_ids)} tokens will be pruned "
-                f"during next batch processing"
+                f"requested={len(input_ids)} tokens, "
+                f"matched={actual_matched_length} tokens, "
+                f"will be pruned during next batch processing"
             )
-            
+
             return PruneSessionReqOutput(
                 success=True,
-                matched_prefix_length=len(input_ids),
-                message=f"Prune queued for session {recv_req.session_id}, will execute during next batch processing"
+                matched_prefix_length=actual_matched_length,
+                message=f"Prune queued for session {recv_req.session_id}, matched {actual_matched_length}/{len(input_ids)} tokens, will execute during next batch processing"
             )
             
         except Exception as e:
