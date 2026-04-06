@@ -580,7 +580,11 @@ class Req:
         self.return_hidden_states = return_hidden_states
 
         # extra key for classifying the request (e.g. cache_salt)
-        if lora_id is not None:
+        # Use session_id as extra_key for session-based cache isolation
+        if session_id is not None:
+            # Session isolation: each session gets its own cache namespace
+            extra_key = session_id
+        elif lora_id is not None:
             extra_key = (
                 extra_key or ""
             ) + lora_id  # lora_id is concatenated to the extra key

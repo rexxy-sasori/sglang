@@ -14,6 +14,7 @@
 """A scheduler that manages a tensor parallel GPU worker."""
 
 import faulthandler
+import hashlib
 import logging
 import os
 import signal
@@ -1522,7 +1523,9 @@ class Scheduler(
             
             if should_auto_create:
                 logger.info(f"Auto-creating session for request {req.rid}")
-                auto_created_session_id = uuid.uuid4().hex
+                # Use deterministic session ID based on request ID to ensure
+                # all TP workers create the same session ID for the same request
+                auto_created_session_id = hashlib.md5(req.rid.encode()).hexdigest()
                 self.sessions[auto_created_session_id] = Session(
                     capacity_of_str_len=0,
                     session_id=auto_created_session_id
@@ -2516,7 +2519,9 @@ class Scheduler(
             from sglang.srt.mem_cache.radix_cache import RadixKey
             from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
             
-            radix_key = RadixKey(input_ids, extra_key=None)
+            # Use session_id as extra_key for session-based cache isolation
+            # This ensures pruning only matches cache entries from the same session
+            radix_key = RadixKey(input_ids, extra_key=recv_req.session_id)
             
             # Perform prefix matching to find the last node
             match_result = self.tree_cache.match_prefix(MatchPrefixParams(key=radix_key))
